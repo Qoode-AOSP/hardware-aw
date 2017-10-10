@@ -141,6 +141,13 @@ static int spkvolume_init = 0x1b;
 static int earpiecevolume_init = 0x1e;
 static int hpvolume_init = 0x3b;
 
+#ifdef AUDIO_EQUALIZER
+//DRICH
+void audio_eq_process( void* buf, size_t samples_count, size_t sample_size, size_t nb_channels );
+void audio_eq_highpass( short* samples_out, short* samples_in, int nSamples );
+void audio_eq_lowpass( short* samples_out, short* samples_in, int nSamples );
+#endif
+
 enum tty_modes {
 	TTY_MODE_OFF,
 	TTY_MODE_VCO,
@@ -1271,6 +1278,47 @@ static int start_output_stream(struct sunxi_stream_out *out)
 	out->config.start_threshold = 0;//SHORT_PERIOD_SIZE * 2;
 	out->config.avail_min = 0; //SHORT_PERIOD_SIZE;
 	out->config.stop_threshold = 0;
+
+	// DRICH : Find USB sound card
+	{
+		int i = 0;
+		int fd = -1;
+		int ret = -1;
+		char class[128] = "";
+		char modalias[128] = "";
+
+		for ( i = 0; i < 10; i++ ) {
+			sprintf( class, "/sys/class/sound/card%d", i );
+			ret = access( class, F_OK );
+			if ( ret != 0 ) {
+				continue;
+			}
+			strcat( class, "/device/modalias" );
+			ret = access( class, F_OK );
+			if ( ret != 0 ) {
+				continue;
+			}
+			if ( ( fd = open( class, O_RDONLY ) ) < 0 ) {
+				continue;
+			}
+			if ( ( ret = read( fd, modalias, 127 ) ) < 0 ) {
+				close(fd);
+				continue;
+			}
+			close(fd);
+			if ( !strncmp( modalias, "usb", 3 ) ) {
+				card = i;
+				port = 0;
+				ALOGV("USB sound card is : %d [%d]", card, sizeof(void*) );
+				break;
+			}
+		}
+	}
+
+#ifdef AUDIO_8_CHANNELS
+	out->config.channels = 8;
+#endif
+
 	ALOGV("start_output_stream: card:%d, port:%d, rate:%d, period_count:%d, period_size:%d", card, port, out->config.rate, out->config.period_count, out->config.period_size);
 	out->pcm = pcm_open(card, port, PCM_OUT | PCM_MONOTONIC, &out->config);
 
@@ -1726,12 +1774,12 @@ static ssize_t out_write(struct audio_stream_out *stream, const void* buffer,
 		get_playback_delay(out, out_frames, &b);
 		out->echo_reference->write(out->echo_reference, &b);
 	}
-
+/*
 	if (adev->af_capture_flag && adev->PcmManager.BufExist) {
 		WritePcmData((void *)buf, out_frames * frame_size, &adev->PcmManager);
 		memset(buf, 0, out_frames * frame_size); //mute
 	}
-
+*/
 #if  USE_3D_SURROUND
         if (sur_enable(&sur)) {
                 if (sur_prepare(&sur, adev->out_device, spk_dul_used, out->config.rate,
@@ -1741,7 +1789,34 @@ static ssize_t out_write(struct audio_stream_out *stream, const void* buffer,
                 }
 #endif
 
-	ret = pcm_write(out->pcm, (void *)buf, out_frames * frame_size);
+#ifdef AUDIO_EQUALIZER
+	// DRICH : process EQ
+	audio_eq_process( buf, out_frames, frame_size / 2, 2 );
+
+#ifdef AUDIO_8_CHANNELS
+	// DRICH : process LPF
+	short lpf[2*2048];
+	audio_eq_lowpass( lpf, buf, out_frames );
+
+	// DRICH : seperate STEREO to 8 channels
+	uint8_t buf8ch[2*8*2048];
+	int byte = 0;
+	int byte_out = 0;
+	for ( byte = 0; byte < bytes; byte += frame_size ) {
+		memcpy( &buf8ch[byte_out + frame_size * 0], &((uint8_t*)buf)[byte], frame_size );
+		memcpy( &buf8ch[byte_out + frame_size * 1], &((uint8_t*)lpf)[byte], frame_size );
+		memcpy( &buf8ch[byte_out + frame_size * 2], &((uint8_t*)buf)[byte], frame_size );
+		memcpy( &buf8ch[byte_out + frame_size * 3], &((uint8_t*)lpf)[byte], frame_size );
+		byte_out += frame_size * 4;
+	}
+	ret = pcm_write(out->pcm, (void*)buf8ch, out_frames * frame_size * 4);
+#else
+	ret = pcm_write(out->pcm, (void*)buf, out_frames * frame_size);
+#endif // AUDIO_8_CHANNELS
+
+	ret = pcm_write(out->pcm, (void*)buf, out_frames * frame_size);
+#endif // AUDIO_EQUALIZER
+
 	if (ret!=0) {
 		do_output_standby(out);
 	} else if (ret == 0)

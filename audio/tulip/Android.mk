@@ -35,6 +35,15 @@ LOCAL_SRC_FILES := audio_hw.c audio_iface.c sunxi_volume.c audio_3d_surround/aud
 
 LOCAL_STATIC_LIBRARIES += libaw_audio3dsur
 
+ifeq ($(AUDIO_EQUALIZER), true)
+LOCAL_SRC_FILES += audio_eq.c FIR.c
+LOCAL_STATIC_LIBRARIES += libfftw3f
+LOCAL_C_FLAGS += -DAUDIO_EQUALIZER
+endif
+ifeq ($(AUDIO_8_CHANNELS), true)
+LOCAL_C_FLAGS += -DAUDIO_8_CHANNELS
+end
+
 #ifneq ($(SW_BOARD_HAVE_3G), true)
 #LOCAL_SRC_FILES += audio_ril_stub.c
 #else
